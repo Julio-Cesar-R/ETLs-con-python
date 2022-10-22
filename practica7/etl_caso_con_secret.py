@@ -7,50 +7,63 @@ from datetime import date
 from prefect import task, Flow
 from prefect.tasks.secrets import PrefectSecret
 
-#1.- Export
+# 1.- Export
 ##1.1- yfinance
 
+
 @task(log_stdout=True)
-def extract(): 
-    tickers = ['NVDA', 'TSLA', 'MSFT', 'AMZN', 'AMD', 'INTC'] #['^GSPC', 'GC=F', 'NVDA', 'TSLA']
+def extract():
+    tickers = [
+        "NVDA",
+        "TSLA",
+        "MSFT",
+        "AMZN",
+        "AMD",
+        "INTC",
+    ]  # ['^GSPC', 'GC=F', 'NVDA', 'TSLA']
     raw_dfs = {}
     for ticker in tickers:
         tk = yf.Ticker(ticker)
-        raw_df = pd.DataFrame(tk.history(period='1d'))
+        raw_df = pd.DataFrame(tk.history(period="1d"))
 
         raw_df.columns = raw_df.columns.str.lower()
-        raw_df = raw_df[['close', 'open', 'high', 'low']]
+        raw_df = raw_df[["close", "open", "high", "low"]]
         raw_dfs[ticker] = raw_df
 
-##1.2- BTC coinbase
-    response = requests.get('https://api.coinbase.com/v2/prices/spot?currency=USD')
+    ##1.2- BTC coinbase
+    response = requests.get("https://api.coinbase.com/v2/prices/spot?currency=USD")
     btc_raw = response.json()
-    btc_value = float(btc_raw['data']['amount'])
-    btc_dct = {'BTC_exc_usd': btc_value}
+    btc_value = float(btc_raw["data"]["amount"])
+    btc_dct = {"BTC_exc_usd": btc_value}
     today = date.today()
     today = today.strftime("%Y-%m-%d")
     btc_index = pd.to_datetime([today])
     btc_raw = pd.DataFrame(btc_dct, index=btc_index)
 
-    raw_dfs['BTC_usd'] = btc_raw
+    raw_dfs["BTC_usd"] = btc_raw
     return raw_dfs
+
 
 @task(log_stdout=True)
 def transform(raw_dfs):
     """
-    - 
+    -
     """
     ##2.2 - Feature engineering
-    tickers = ['NVDA', 'TSLA', 'MSFT', 'AMZN', 'AMD', 'INTC']
+    tickers = ["NVDA", "TSLA", "MSFT", "AMZN", "AMD", "INTC"]
     for ticker in tickers:
         df = raw_dfs[ticker]
 
-        df['dif_apert_cierre'] = df['open'] - df['close']
-        df['rango_dia'] = df['high'] - df['low']
-        df['signo_dia'] = np.where(df['dif_apert_cierre'] > 0.0, "+", np.where(df['dif_apert_cierre'] < 0.0, "-", "0"))
+        df["dif_apert_cierre"] = df["open"] - df["close"]
+        df["rango_dia"] = df["high"] - df["low"]
+        df["signo_dia"] = np.where(
+            df["dif_apert_cierre"] > 0.0,
+            "+",
+            np.where(df["dif_apert_cierre"] < 0.0, "-", "0"),
+        )
 
-        df = df[['close', 'dif_apert_cierre', 'rango_dia', 'signo_dia']]
-        df.columns = list(map(lambda x: ticker +'_'+ x, df.columns.to_list()))
+        df = df[["close", "dif_apert_cierre", "rango_dia", "signo_dia"]]
+        df.columns = list(map(lambda x: ticker + "_" + x, df.columns.to_list()))
         raw_dfs[ticker] = df
 
     ##2.3 - Agregado
@@ -62,6 +75,7 @@ def transform(raw_dfs):
 
     return tablon
 
+
 @task(log_stdout=True)
 def load(tablon, credentials):
     """
@@ -72,15 +86,17 @@ def load(tablon, credentials):
     """
     today = date.today()
     today = today.strftime("%Y-%m-%d")
-    
+
     # 3.1- Validación de operación en mercados ese día
     num_rows_tablon = len(tablon.index)
     if num_rows_tablon != 1:
-        print("Hay conflicto en la actualización de datos. Probablemente no se haya operado en NASDAQ ese día. Revisar trazas.")
+        print(
+            "Hay conflicto en la actualización de datos. Probablemente no se haya operado en NASDAQ ese día. Revisar trazas."
+        )
         return
 
-    #3.2 - Create Table if not exists
-    nombre_cols_sql = ['[' + col + ']' for col in tablon.columns]
+    # 3.2 - Create Table if not exists
+    nombre_cols_sql = ["[" + col + "]" for col in tablon.columns]
     sql_create_btc_valores = """
         IF NOT EXISTS (SELECT name FROM sys.tables WHERE name = 'btcvalores')
             CREATE TABLE btcvalores (
@@ -111,39 +127,56 @@ def load(tablon, credentials):
                 {} VARCHAR,
                 {} DECIMAL (20, 2)
         )
-        """.format(*nombre_cols_sql)
+        """.format(
+        *nombre_cols_sql
+    )
 
-    server = 'tcp:ud-caso-btc-01.database.windows.net' 
-    database = 'caso_nasdaq_btc'
-    username = 'admin_ud'
-    password = credentials 
-    cnxn = pyodbc.connect('DRIVER={ODBC Driver 17 for SQL Server};SERVER='+server+';DATABASE='+database+';UID='+username+';PWD='+password)
+    server = "tcp:ud-caso-btc-01.database.windows.net"
+    database = "caso_nasdaq_btc"
+    username = "admin_ud"
+    password = credentials
+    cnxn = pyodbc.connect(
+        "DRIVER={ODBC Driver 17 for SQL Server};SERVER="
+        + server
+        + ";DATABASE="
+        + database
+        + ";UID="
+        + username
+        + ";PWD="
+        + password
+    )
     cursor = cnxn.cursor()
     cursor.execute(sql_create_btc_valores)
     cnxn.commit()
 
-    #3.3 - Validar si hay registros para ese día
-    query_exists = "SELECT fecha FROM [dbo].[btcvalores] WHERE fecha = '{}'".format(str(today))
+    # 3.3 - Validar si hay registros para ese día
+    query_exists = "SELECT fecha FROM [dbo].[btcvalores] WHERE fecha = '{}'".format(
+        str(today)
+    )
     cursor.execute(query_exists)
     row = cursor.fetchone()
     if row:
         print("Ya existe un registro para ese día.")
         return
 
-    #3.4 - insert
-    tablon.insert(0, 'fecha', today)
-    tablon['fecha'] = tablon.index
-    for index,row in tablon.iterrows():
+    # 3.4 - insert
+    tablon.insert(0, "fecha", today)
+    tablon["fecha"] = tablon.index
+    for index, row in tablon.iterrows():
         print(row.tolist())
-        cursor.execute('INSERT INTO dbo.btcvalores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row.tolist())
+        cursor.execute(
+            "INSERT INTO dbo.btcvalores VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            row.tolist(),
+        )
         cnxn.commit()
     cursor.close()
     cnxn.close()
+
 
 with Flow("ETL BTC") as flow:
     raw_dfs = extract()
     tablon = transform(raw_dfs)
     secret = PrefectSecret("pwd_sql")
-    load(tablon = tablon, credentials = secret)
+    load(tablon=tablon, credentials=secret)
 
 flow.run()
